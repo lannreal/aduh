@@ -161,8 +161,8 @@ stateDiagram-v2
 
 ```bash
 # 1. Clone repository
-git clone https://github.com/YOUR_USERNAME/TEMPE.git
-cd TEMPE
+git clone https://github.com/lannreal/aduh.git
+cd aduh
 
 # 2. Jalankan (Zero Dependencies — Tanpa npm install!)
 node yt.js
