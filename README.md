@@ -1,7 +1,7 @@
 <div align="center">
 
 <!-- Animated Header Banner -->
-<img src="https://capsule-render.vercel.app/api?type=waving&color=gradient&height=220&section=header&text=TEMPE&fontSize=80&fontColor=ffffff&animation=fadeIn&fontAlignY=35&desc=YouTube%20Search%20%26%20Stream%20Proxy%20API&descSize=18&descAlignY=55&descAlign=50" width="100%" alt="TEMPE Banner" />
+<img src="https://capsule-render.vercel.app/api?type=waving&color=auto&height=220&section=header&text=TEMPE&fontSize=80&fontColor=ffffff&animation=fadeIn&fontAlignY=35&desc=YouTube%20Search%20%26%20Stream%20Proxy%20API&descSize=18&descAlignY=55&descAlign=50" width="100%" alt="TEMPE Banner" />
 
 <br />
 
@@ -454,7 +454,7 @@ TEMPE/
 <!-- Animated Footer Banner -->
 <div align="center">
 
-<img src="https://capsule-render.vercel.app/api?type=waving&color=gradient&height=120&section=footer" width="100%" alt="Footer Banner" />
+<img src="https://capsule-render.vercel.app/api?type=waving&color=auto&height=120&section=footer" width="100%" alt="Footer Banner" />
 
 <p align="center">
   <sub>Built with ❤️ using pure Node.js — Zero Dependencies</sub>
