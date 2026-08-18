@@ -1,6 +1,7 @@
 <div align="center">
 
 <!-- Animated Header Banner -->
+<img src="https://capsule-render.vercel.app/api?type=waving&color=auto&height=220&section=header&text=TEMPE%20v2&fontSize=70&fontColor=ffffff&animation=fadeIn&fontAlignY=35&desc=Ultra-Fast%20YouTube%20Search%2C%20Stream%20Proxy%20%26%20REST%20API&descSize=18&descAlignY=55&descAlign=50" width="100%" alt="TEMPE Banner" />
 
 <br />
 

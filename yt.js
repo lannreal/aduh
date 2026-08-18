@@ -216,7 +216,7 @@ async function getVideoInfo(youtubeUrl) {
 }
 
 /**
- * Fast Instant CDN Media Stream Resolver (100ms HEAD probe)
+ * Fast Instant CDN Media Stream Resolver (Parallel 100ms HEAD probe)
  */
 async function resolveInstantCdnStream(videoId, title, quality = '360', ext = 'mp4') {
   if (!videoId) return null;
@@ -226,51 +226,78 @@ async function resolveInstantCdnStream(videoId, title, quality = '360', ext = 'm
     .trim()
     .replace(/[\s-]+/g, '-');
 
-  const cdns = ['cdn400.savetube.vip', 'cdn406.savetube.vip', 'cdn401.savetube.vip', 'cdn405.savetube.vip'];
+  const cdns = ['cdn405.savetube.vip', 'cdn400.savetube.vip', 'cdn406.savetube.vip', 'cdn401.savetube.vip'];
   
-  for (const cdn of cdns) {
+  const probePromises = cdns.map(async (cdn) => {
     const url = `https://${cdn}/media/${videoId}/${cleanTitle}-${quality}-ytshorts.savetube.me.${ext}`;
     try {
-      const res = await fetch(url, { method: 'HEAD', signal: AbortSignal.timeout(1000) });
-      if (res.ok) {
-        return url;
-      }
+      const res = await fetch(url, { method: 'HEAD', signal: AbortSignal.timeout(2000) });
+      if (res.ok) return url;
     } catch {}
-  }
-  return null;
+    return null;
+  });
+
+  const results = await Promise.all(probePromises);
+  return results.find(Boolean) || null;
 }
 
 /**
  * Resolve a single fresh download URL for a specific quality+type
- * Fast Primary: YouTube Innertube Android Engine (~60ms)
- * Secondary: Savetube CDN & format scraper
+ * Video: Fast YouTube Innertube Android Engine (~60ms)
+ * Audio: Genuine MP3 stream from CDN / Savetube Scraper (Pure Audio)
  */
 async function resolveFreshUrl(youtubeUrl, quality, type) {
   const videoId = (youtubeUrl.match(/(?:v=|\/live\/|\/shorts\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/) || [])[1];
   if (!videoId) throw new Error('ID Video YouTube tidak valid');
 
   const qualityNum = String(quality).replace(/[^0-9]/g, '') || '360';
-  const ext = type === 'audio' ? 'mp3' : 'mp4';
 
-  // 1. PRIMARY ENGINE: YouTube Innertube Player API (Ultra Fast, ~60-100ms)
-  try {
-    const innertubeData = await fetchInnertubePlayer(videoId);
-    const streamingData = innertubeData.streamingData;
-    if (streamingData) {
-      const progressiveFormats = (streamingData.formats || []).filter(f => f.url);
-      const adaptiveFormats = (streamingData.adaptiveFormats || []).filter(f => f.url);
+  if (type === 'audio') {
+    let videoTitle = '';
 
-      if (type === 'audio') {
-        // High quality AAC audio (itag 140) or Opus (itag 251)
-        const audio140 = adaptiveFormats.find(f => f.itag === 140);
-        if (audio140?.url) return audio140.url;
+    // 1. Fetch title from Innertube in 60ms
+    try {
+      const innertubeData = await fetchInnertubePlayer(videoId);
+      videoTitle = innertubeData.videoDetails?.title || '';
+    } catch {}
 
-        const anyAudio = adaptiveFormats.find(f => f.mimeType?.startsWith('audio/'));
-        if (anyAudio?.url) return anyAudio.url;
+    const cachedTitle = videoInfoCache.get(youtubeUrl)?.data?.videoInfo?.title;
+    const title = videoTitle || cachedTitle || 'audio';
 
-        if (progressiveFormats[0]?.url) return progressiveFormats[0].url;
-      } else {
-        // Video request
+    // 2. Parallel probe for instant pre-rendered MP3
+    const instantMp3 = await resolveInstantCdnStream(videoId, title, '128', 'mp3');
+    if (instantMp3) return instantMp3;
+
+    // 3. Savetube Scraper /download for genuine static MP3
+    try {
+      const { videoInfo, headers, usedCdn } = await getVideoInfo(youtubeUrl);
+      if (videoInfo.title) {
+        const instantUrl = await resolveInstantCdnStream(videoId, videoInfo.title, '128', 'mp3');
+        if (instantUrl) return instantUrl;
+      }
+      if (videoInfo.key) {
+        const url = await fetchFormatUrl(headers, videoInfo.key, 'audio', '128', usedCdn, 4000);
+        if (url) return url;
+      }
+    } catch (savetubeErr) {}
+
+    // 4. Retry instant probe in case Savetube just finished generating it
+    const retryMp3 = await resolveInstantCdnStream(videoId, title, '128', 'mp3');
+    if (retryMp3) return retryMp3;
+
+    // 5. Guaranteed Fallback: Innertube Android Progressive stream (100% available in 60ms)
+    try {
+      const innertubeData = await fetchInnertubePlayer(videoId);
+      const progressiveFormats = (innertubeData.streamingData?.formats || []).filter(f => f.url);
+      if (progressiveFormats[0]?.url) return progressiveFormats[0].url;
+    } catch (innertubeErr) {}
+  } else {
+    // 1. PRIMARY VIDEO ENGINE: YouTube Innertube Player API (Ultra Fast, ~60-100ms)
+    try {
+      const innertubeData = await fetchInnertubePlayer(videoId);
+      const streamingData = innertubeData.streamingData;
+      if (streamingData) {
+        const progressiveFormats = (streamingData.formats || []).filter(f => f.url);
         if (qualityNum === '720') {
           const prog720 = progressiveFormats.find(f => f.itag === 22);
           if (prog720?.url) return prog720.url;
@@ -279,59 +306,52 @@ async function resolveFreshUrl(youtubeUrl, quality, type) {
         // Standard progressive 360p has both synchronized video & audio
         const prog360 = progressiveFormats.find(f => f.itag === 18) || progressiveFormats[0];
         if (prog360?.url) return prog360.url;
-
-        // Adaptive format if available
-        const adaptiveMatch = adaptiveFormats.find(f => f.qualityLabel?.includes(qualityNum));
-        if (adaptiveMatch?.url) return adaptiveMatch.url;
       }
-    }
-  } catch (innertubeErr) {
-    // Fall back to secondary engine
-  }
+    } catch (innertubeErr) {}
 
-  // 2. SECONDARY ENGINE: Check pre-rendered instant CDN streams
-  const cached = videoInfoCache.get(youtubeUrl)?.data;
-  if (cached?.videoInfo?.title) {
-    const instantUrl = await resolveInstantCdnStream(videoId, cached.videoInfo.title, qualityNum, ext);
-    if (instantUrl) return instantUrl;
-    if (type === 'video' && qualityNum !== '360') {
-      const fallback360 = await resolveInstantCdnStream(videoId, cached.videoInfo.title, '360', 'mp4');
-      if (fallback360) return fallback360;
-    }
-  }
-
-  // 3. TERTIARY ENGINE: Savetube CDN Scraper
-  try {
-    const { videoInfo, headers, usedCdn } = await getVideoInfo(youtubeUrl);
-
-    // Check direct URLs in video_formats / audio_formats first
-    if (type === 'video' && videoInfo.video_formats) {
-      const directMatch = videoInfo.video_formats.find(f => String(f.quality) === qualityNum && f.url);
-      if (directMatch?.url) return directMatch.url;
-      const direct360 = videoInfo.video_formats.find(f => String(f.quality) === '360' && f.url);
-      if (direct360?.url) return direct360.url;
-    }
-
-    if (videoInfo.title) {
-      const instantUrl = await resolveInstantCdnStream(videoId, videoInfo.title, qualityNum, ext);
+    // 2. SECONDARY VIDEO ENGINE: Check pre-rendered instant CDN streams
+    const cached = videoInfoCache.get(youtubeUrl)?.data;
+    if (cached?.videoInfo?.title) {
+      const instantUrl = await resolveInstantCdnStream(videoId, cached.videoInfo.title, qualityNum, 'mp4');
       if (instantUrl) return instantUrl;
-      if (type === 'video' && qualityNum !== '360') {
-        const fallback360 = await resolveInstantCdnStream(videoId, videoInfo.title, '360', 'mp4');
+      if (qualityNum !== '360') {
+        const fallback360 = await resolveInstantCdnStream(videoId, cached.videoInfo.title, '360', 'mp4');
         if (fallback360) return fallback360;
       }
     }
 
-    if (videoInfo.key) {
-      const timeout = (qualityNum === '360' || type === 'audio') ? 5000 : 2500;
-      let url = await fetchFormatUrl(headers, videoInfo.key, type, qualityNum, usedCdn, timeout);
-      if (url) return url;
+    // 3. TERTIARY VIDEO ENGINE: Savetube CDN Scraper
+    try {
+      const { videoInfo, headers, usedCdn } = await getVideoInfo(youtubeUrl);
 
-      if (type === 'video' && qualityNum !== '360') {
-        url = await fetchFormatUrl(headers, videoInfo.key, 'video', '360', usedCdn, 5000);
-        if (url) return url;
+      if (videoInfo.video_formats) {
+        const directMatch = videoInfo.video_formats.find(f => String(f.quality) === qualityNum && f.url);
+        if (directMatch?.url) return directMatch.url;
+        const direct360 = videoInfo.video_formats.find(f => String(f.quality) === '360' && f.url);
+        if (direct360?.url) return direct360.url;
       }
-    }
-  } catch (savetubeErr) {}
+
+      if (videoInfo.title) {
+        const instantUrl = await resolveInstantCdnStream(videoId, videoInfo.title, qualityNum, 'mp4');
+        if (instantUrl) return instantUrl;
+        if (qualityNum !== '360') {
+          const fallback360 = await resolveInstantCdnStream(videoId, videoInfo.title, '360', 'mp4');
+          if (fallback360) return fallback360;
+        }
+      }
+
+      if (videoInfo.key) {
+        const timeout = qualityNum === '360' ? 5000 : 2500;
+        let url = await fetchFormatUrl(headers, videoInfo.key, 'video', qualityNum, usedCdn, timeout);
+        if (url) return url;
+
+        if (qualityNum !== '360') {
+          url = await fetchFormatUrl(headers, videoInfo.key, 'video', '360', usedCdn, 5000);
+          if (url) return url;
+        }
+      }
+    } catch (savetubeErr) {}
+  }
 
   throw new Error(`Format ${type} ${quality} tidak tersedia`);
 }
@@ -677,8 +697,13 @@ function startServer(silent = false) {
       }
 
       try {
+        let targetUrl = await getOrResolveStreamUrl(hash, meta);
+        const isGoogle = targetUrl.includes('googlevideo.com');
+
         const proxyHeaders = {
-          'User-Agent': 'com.google.android.youtube/20.10.38 (Linux; U; Android 14; US) gzip',
+          'User-Agent': isGoogle
+            ? 'com.google.android.youtube/20.10.38 (Linux; U; Android 14; US) gzip'
+            : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
           'Accept': '*/*'
         };
 
@@ -686,13 +711,16 @@ function startServer(silent = false) {
           proxyHeaders['Range'] = req.headers['range'];
         }
 
-        let targetUrl = await getOrResolveStreamUrl(hash, meta);
         let remoteRes = await fetch(targetUrl, { headers: proxyHeaders, redirect: 'follow' });
 
         if (remoteRes.status === 403 || remoteRes.status === 410) {
           console.log(`⚠️ [Stream Proxy] URL expired (${remoteRes.status}), re-resolving...`);
           invalidateCachedUrl(hash);
           targetUrl = await getOrResolveStreamUrl(hash, meta);
+          const isGoogleRetry = targetUrl.includes('googlevideo.com');
+          proxyHeaders['User-Agent'] = isGoogleRetry
+            ? 'com.google.android.youtube/20.10.38 (Linux; U; Android 14; US) gzip'
+            : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
           remoteRes = await fetch(targetUrl, { headers: proxyHeaders, redirect: 'follow' });
         }
 
@@ -703,7 +731,7 @@ function startServer(silent = false) {
         const responseHeaders = {};
         for (const [key, value] of remoteRes.headers.entries()) {
           const lowerKey = key.toLowerCase();
-          if (['content-type', 'content-length', 'content-range', 'accept-ranges', 'etag', 'last-modified'].includes(lowerKey)) {
+          if (['content-length', 'content-range', 'accept-ranges', 'etag', 'last-modified'].includes(lowerKey)) {
             responseHeaders[key] = value;
           }
         }
@@ -713,8 +741,10 @@ function startServer(silent = false) {
         responseHeaders['Access-Control-Allow-Origin'] = '*';
         responseHeaders['Access-Control-Allow-Headers'] = 'Range, Content-Type';
 
-        if (!responseHeaders['content-type'] || responseHeaders['content-type'].includes('octet-stream')) {
-          responseHeaders['Content-Type'] = meta.type === 'audio' ? 'audio/mp4' : 'video/mp4';
+        if (meta.type === 'audio') {
+          responseHeaders['Content-Type'] = targetUrl.endsWith('.mp3') ? 'audio/mpeg' : 'audio/mp4';
+        } else {
+          responseHeaders['Content-Type'] = 'video/mp4';
         }
 
         res.writeHead(remoteRes.status, responseHeaders);
